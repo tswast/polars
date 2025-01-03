@@ -151,6 +151,7 @@ if TYPE_CHECKING:
     import subprocess
 
     import altair
+    from google.cloud import bigquery_storage_v1
     import deltalake
     import fsspec
     import gevent
@@ -171,6 +172,7 @@ else:
 
     # heavy/optional third party libs
     altair, _ALTAIR_AVAILABLE = _lazy_import("altair")
+    bigquery_storage_v1, _BIGQUERY_STORAGE_V1_AVAILABLE = _lazy_import("google.cloud.bigquery_storage_v1")
     deltalake, _DELTALAKE_AVAILABLE = _lazy_import("deltalake")
     fsspec, _FSSPEC_AVAILABLE = _lazy_import("fsspec")
     great_tables, _GREAT_TABLES_AVAILABLE = _lazy_import("great_tables")
@@ -292,6 +294,7 @@ __all__ = [
     "subprocess",
     # lazy-load third party libs
     "altair",
+    "bigquery_storage_v1",
     "deltalake",
     "fsspec",
     "gevent",
@@ -308,6 +311,7 @@ __all__ = [
     "_check_for_pydantic",
     # exported flags/guards
     "_ALTAIR_AVAILABLE",
+    "_BIGQUERY_STORAGE_V1_AVAILABLE",
     "_DELTALAKE_AVAILABLE",
     "_PYICEBERG_AVAILABLE",
     "_FSSPEC_AVAILABLE",

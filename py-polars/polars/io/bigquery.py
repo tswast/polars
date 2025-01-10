@@ -1,22 +1,16 @@
-<<<<<<< HEAD
 from __future__ import annotations
 
 import functools
 import io
 from typing import TYPE_CHECKING, Tuple, Iterator
 
-=======
-import functools
-import io
-from typing import TYPE_CHECKING, Tuple, Iterator
-
->>>>>>> 5d20614906bcc4497b242672f74bfb3684a35ce4
 from polars.datatypes import (
     Int64,
     String,
 )
 from polars.dependencies import bigquery_storage_v1
 import polars._reexport as pl
+import polars.io.ipc
 
 
 if TYPE_CHECKING:
@@ -109,15 +103,16 @@ def _scan_bigquery_impl(
 
     if len(session.streams) == 0:
         # TODO: will arrow_schema be populated  in an empty read session?
-        yield None  # How do we create an empty frame with just the requested columns?
         return
 
     reader = bqstorage_client.read_rows(session.streams[0].name)
+    stream = io.BytesIO()
+    stream.write(arrow_schema)
     
     for message in reader:
-        stream = io.BytesIO(arrow_schema)
-        
-        # TODO: do I need to make this respect the batch_size somehow?
         stream.write(message.arrow_record_batch.serialized_record_batch)
-        stream.seek(0)
-        yield pl.read_ipc_stream(stream)
+
+    stream.seek(0)
+    return polars.io.ipc.read_ipc_stream(stream)
+
+    # TODO: filters that couldn't apply at the source

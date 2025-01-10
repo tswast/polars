@@ -1,9 +1,16 @@
+<<<<<<< HEAD
 from __future__ import annotations
 
 import functools
 import io
 from typing import TYPE_CHECKING, Tuple, Iterator
 
+=======
+import functools
+import io
+from typing import TYPE_CHECKING, Tuple, Iterator
+
+>>>>>>> 5d20614906bcc4497b242672f74bfb3684a35ce4
 from polars.datatypes import (
     Int64,
     String,

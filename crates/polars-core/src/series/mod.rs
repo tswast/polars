@@ -448,7 +448,7 @@ impl Series {
             #[cfg(feature = "dtype-struct")]
             DataType::Struct(_) => self.struct_().unwrap().cast_unchecked(dtype),
             DataType::List(_) => self.list().unwrap().cast_unchecked(dtype),
-            dt if dt.is_numeric() => {
+            dt if dt.is_primitive_numeric() => {
                 with_match_physical_numeric_polars_type!(dt, |$T| {
                     let ca: &ChunkedArray<$T> = self.as_ref().as_ref().as_ref();
                         ca.cast_unchecked(dtype)
@@ -594,7 +594,7 @@ impl Series {
         match self.dtype() {
             DataType::Float32 => Ok(self.f32().unwrap().is_nan()),
             DataType::Float64 => Ok(self.f64().unwrap().is_nan()),
-            dt if dt.is_numeric() => {
+            dt if dt.is_primitive_numeric() => {
                 let arr = BooleanArray::full(self.len(), false, ArrowDataType::Boolean)
                     .with_validity(self.rechunk_validity());
                 Ok(BooleanChunked::with_chunk(self.name().clone(), arr))
@@ -608,7 +608,7 @@ impl Series {
         match self.dtype() {
             DataType::Float32 => Ok(self.f32().unwrap().is_not_nan()),
             DataType::Float64 => Ok(self.f64().unwrap().is_not_nan()),
-            dt if dt.is_numeric() => {
+            dt if dt.is_primitive_numeric() => {
                 let arr = BooleanArray::full(self.len(), true, ArrowDataType::Boolean)
                     .with_validity(self.rechunk_validity());
                 Ok(BooleanChunked::with_chunk(self.name().clone(), arr))
@@ -622,7 +622,7 @@ impl Series {
         match self.dtype() {
             DataType::Float32 => Ok(self.f32().unwrap().is_finite()),
             DataType::Float64 => Ok(self.f64().unwrap().is_finite()),
-            dt if dt.is_numeric() => {
+            dt if dt.is_primitive_numeric() => {
                 let arr = BooleanArray::full(self.len(), true, ArrowDataType::Boolean)
                     .with_validity(self.rechunk_validity());
                 Ok(BooleanChunked::with_chunk(self.name().clone(), arr))
@@ -636,7 +636,7 @@ impl Series {
         match self.dtype() {
             DataType::Float32 => Ok(self.f32().unwrap().is_infinite()),
             DataType::Float64 => Ok(self.f64().unwrap().is_infinite()),
-            dt if dt.is_numeric() => {
+            dt if dt.is_primitive_numeric() => {
                 let arr = BooleanArray::full(self.len(), false, ArrowDataType::Boolean)
                     .with_validity(self.rechunk_validity());
                 Ok(BooleanChunked::with_chunk(self.name().clone(), arr))
@@ -1006,55 +1006,41 @@ impl Default for Series {
     }
 }
 
-fn equal_outer_type<T: 'static + PolarsDataType>(dtype: &DataType) -> bool {
-    match (T::get_dtype(), dtype) {
-        (DataType::List(_), DataType::List(_)) => true,
-        #[cfg(feature = "dtype-array")]
-        (DataType::Array(_, _), DataType::Array(_, _)) => true,
-        #[cfg(feature = "dtype-struct")]
-        (DataType::Struct(_), DataType::Struct(_)) => true,
-        (a, b) => &a == b,
-    }
-}
-
 impl<T> AsRef<ChunkedArray<T>> for dyn SeriesTrait + '_
 where
-    T: 'static + PolarsDataType,
+    T: 'static + PolarsDataType<IsLogical = FalseT>,
 {
     fn as_ref(&self) -> &ChunkedArray<T> {
-        let dtype = self.dtype();
+        // @NOTE: SeriesTrait `as_any` returns a std::any::Any for the underlying ChunkedArray /
+        // Logical (so not the SeriesWrap).
+        let Some(ca) = self.as_any().downcast_ref::<ChunkedArray<T>>() else {
+            panic!(
+                "implementation error, cannot get ref {:?} from {:?}",
+                T::get_dtype(),
+                self.dtype()
+            );
+        };
 
-        #[cfg(feature = "dtype-decimal")]
-        if dtype.is_decimal() {
-            let logical = self.as_any().downcast_ref::<DecimalChunked>().unwrap();
-            let ca = logical.physical();
-            return ca.as_any().downcast_ref::<ChunkedArray<T>>().unwrap();
-        }
-        let eq = equal_outer_type::<T>(dtype);
-        assert!(
-            eq,
-            "implementation error, cannot get ref {:?} from {:?}",
-            T::get_dtype(),
-            self.dtype()
-        );
-        // SAFETY: we just checked the type.
-        unsafe { &*(self as *const dyn SeriesTrait as *const ChunkedArray<T>) }
+        ca
     }
 }
 
 impl<T> AsMut<ChunkedArray<T>> for dyn SeriesTrait + '_
 where
-    T: 'static + PolarsDataType,
+    T: 'static + PolarsDataType<IsLogical = FalseT>,
 {
     fn as_mut(&mut self) -> &mut ChunkedArray<T> {
-        let eq = equal_outer_type::<T>(self.dtype());
-        assert!(
-            eq,
-            "implementation error, cannot get ref {:?} from {:?}",
-            T::get_dtype(),
-            self.dtype()
-        );
-        unsafe { &mut *(self as *mut dyn SeriesTrait as *mut ChunkedArray<T>) }
+        if !self.as_any_mut().is::<ChunkedArray<T>>() {
+            panic!(
+                "implementation error, cannot get ref {:?} from {:?}",
+                T::get_dtype(),
+                self.dtype()
+            );
+        }
+
+        // @NOTE: SeriesTrait `as_any` returns a std::any::Any for the underlying ChunkedArray /
+        // Logical (so not the SeriesWrap).
+        self.as_any_mut().downcast_mut::<ChunkedArray<T>>().unwrap()
     }
 }
 

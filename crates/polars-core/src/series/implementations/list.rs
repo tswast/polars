@@ -184,7 +184,7 @@ impl SeriesTrait for SeriesWrap<ListChunked> {
 
     #[cfg(feature = "algorithm_group_by")]
     fn unique(&self) -> PolarsResult<Series> {
-        if !self.inner_dtype().is_numeric() {
+        if !self.inner_dtype().is_primitive_numeric() {
             polars_bail!(opq = unique, self.dtype());
         }
         // this can be called in aggregation, so this fast path can be worth a lot
@@ -200,7 +200,7 @@ impl SeriesTrait for SeriesWrap<ListChunked> {
 
     #[cfg(feature = "algorithm_group_by")]
     fn n_unique(&self) -> PolarsResult<usize> {
-        if !self.inner_dtype().is_numeric() {
+        if !self.inner_dtype().is_primitive_numeric() {
             polars_bail!(opq = n_unique, self.dtype());
         }
         // this can be called in aggregation, so this fast path can be worth a lot
@@ -217,7 +217,7 @@ impl SeriesTrait for SeriesWrap<ListChunked> {
 
     #[cfg(feature = "algorithm_group_by")]
     fn arg_unique(&self) -> PolarsResult<IdxCa> {
-        if !self.inner_dtype().is_numeric() {
+        if !self.inner_dtype().is_primitive_numeric() {
             polars_bail!(opq = arg_unique, self.dtype());
         }
         // this can be called in aggregation, so this fast path can be worth a lot
@@ -254,12 +254,11 @@ impl SeriesTrait for SeriesWrap<ListChunked> {
     fn clone_inner(&self) -> Arc<dyn SeriesTrait> {
         Arc::new(SeriesWrap(Clone::clone(&self.0)))
     }
+
     fn as_any(&self) -> &dyn Any {
         &self.0
     }
 
-    /// Get a hold to self as `Any` trait reference.
-    /// Only implemented for ObjectType
     fn as_any_mut(&mut self) -> &mut dyn Any {
         &mut self.0
     }

@@ -85,7 +85,7 @@ fn remove_suffix(
         stack.push(expr.node());
         while let Some(node) = stack.pop() {
             let expr = expr_arena.get_mut(node);
-            expr.nodes(&mut stack);
+            expr.inputs_rev(&mut stack);
 
             let AExpr::Column(colname) = expr else {
                 continue;
@@ -311,7 +311,7 @@ pub fn optimize(root: Node, lp_arena: &mut Arena<IR>, expr_arena: &mut Arena<AEx
                                 ) -> bool {
                                     aexpr_to_leaf_names_iter(node, expr_arena).any(|name| {
                                         if let Some(dt) = schema.get(name.as_str()) {
-                                            dt.to_physical().is_numeric()
+                                            dt.to_physical().is_primitive_numeric()
                                         } else {
                                             false
                                         }

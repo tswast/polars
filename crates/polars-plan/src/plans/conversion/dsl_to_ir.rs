@@ -217,7 +217,7 @@ pub fn to_alp_impl(lp: DslPlan, ctxt: &mut DslConversionContext) -> PolarsResult
                         let (file_info, md) =
                             scans::ipc_file_info(&sources, &file_options, cloud_options.as_ref())
                                 .map_err(|e| e.context(failed_here!(ipc scan)))?;
-                        *metadata = Some(md);
+                        *metadata = Some(Arc::new(md));
                         file_info
                     },
                     #[cfg(feature = "csv")]
@@ -417,10 +417,11 @@ pub fn to_alp_impl(lp: DslPlan, ctxt: &mut DslConversionContext) -> PolarsResult
             let predicate_ae = to_expr_ir(predicate.clone(), ctxt.expr_arena)?;
 
             // TODO: We could do better here by using `pushdown_eligibility()`
-            return if permits_filter_pushdown_rec(
-                ctxt.expr_arena.get(predicate_ae.node()),
-                ctxt.expr_arena,
-            ) {
+            return if ctxt.opt_flags.predicate_pushdown()
+                && permits_filter_pushdown_rec(
+                    ctxt.expr_arena.get(predicate_ae.node()),
+                    ctxt.expr_arena,
+                ) {
                 // Split expression that are ANDed into multiple Filter nodes as the optimizer can then
                 // push them down independently. Especially if they refer columns from different tables
                 // this will be more performant.
@@ -429,6 +430,7 @@ pub fn to_alp_impl(lp: DslPlan, ctxt: &mut DslConversionContext) -> PolarsResult
                 // filter [foo == bar]
                 // filter [ham == spam]
                 let mut predicates = vec![];
+
                 let mut stack = vec![predicate_ae.node()];
                 while let Some(n) = stack.pop() {
                     if let AExpr::BinaryExpr {
@@ -443,7 +445,6 @@ pub fn to_alp_impl(lp: DslPlan, ctxt: &mut DslConversionContext) -> PolarsResult
                         predicates.push(n)
                     }
                 }
-                let multiple_filters = predicates.len() > 1;
 
                 for predicate in predicates {
                     let predicate = ExprIR::from_node(predicate, ctxt.expr_arena);
@@ -451,11 +452,6 @@ pub fn to_alp_impl(lp: DslPlan, ctxt: &mut DslConversionContext) -> PolarsResult
                         .push_scratch(predicate.node(), ctxt.expr_arena);
                     let lp = IR::Filter { input, predicate };
                     input = run_conversion(lp, ctxt, "filter")?;
-                }
-
-                // Ensure that predicate are combined by optimizer
-                if ctxt.opt_flags.eager() && multiple_filters {
-                    ctxt.opt_flags.insert(OptFlags::EAGER);
                 }
 
                 Ok(input)
@@ -799,28 +795,32 @@ pub fn to_alp_impl(lp: DslPlan, ctxt: &mut DslConversionContext) -> PolarsResult
                 DslFunction::Stats(sf) => {
                     let exprs = match sf {
                         StatsFunction::Var { ddof } => stats_helper(
-                            |dt| dt.is_numeric() || dt.is_bool(),
+                            |dt| dt.is_primitive_numeric() || dt.is_bool(),
                             |name| col(name.clone()).var(ddof),
                             &input_schema,
                         ),
                         StatsFunction::Std { ddof } => stats_helper(
-                            |dt| dt.is_numeric() || dt.is_bool(),
+                            |dt| dt.is_primitive_numeric() || dt.is_bool(),
                             |name| col(name.clone()).std(ddof),
                             &input_schema,
                         ),
                         StatsFunction::Quantile { quantile, method } => stats_helper(
-                            |dt| dt.is_numeric(),
+                            |dt| dt.is_primitive_numeric(),
                             |name| col(name.clone()).quantile(quantile.clone(), method),
                             &input_schema,
                         ),
                         StatsFunction::Mean => stats_helper(
-                            |dt| dt.is_numeric() || dt.is_temporal() || dt == &DataType::Boolean,
+                            |dt| {
+                                dt.is_primitive_numeric()
+                                    || dt.is_temporal()
+                                    || dt == &DataType::Boolean
+                            },
                             |name| col(name.clone()).mean(),
                             &input_schema,
                         ),
                         StatsFunction::Sum => stats_helper(
                             |dt| {
-                                dt.is_numeric()
+                                dt.is_primitive_numeric()
                                     || dt.is_decimal()
                                     || matches!(dt, DataType::Boolean | DataType::Duration(_))
                             },
@@ -838,7 +838,11 @@ pub fn to_alp_impl(lp: DslPlan, ctxt: &mut DslConversionContext) -> PolarsResult
                             &input_schema,
                         ),
                         StatsFunction::Median => stats_helper(
-                            |dt| dt.is_numeric() || dt.is_temporal() || dt == &DataType::Boolean,
+                            |dt| {
+                                dt.is_primitive_numeric()
+                                    || dt.is_temporal()
+                                    || dt == &DataType::Boolean
+                            },
                             |name| col(name.clone()).median(),
                             &input_schema,
                         ),

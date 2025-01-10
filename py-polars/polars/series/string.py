@@ -528,7 +528,7 @@ class StringNameSpace:
         ]
         """
 
-    def ends_with(self, suffix: str | Expr) -> Series:
+    def ends_with(self, suffix: str | Expr | None) -> Series:
         """
         Check if string values end with a substring.
 
@@ -679,10 +679,10 @@ class StringNameSpace:
 
     def json_path_match(self, json_path: IntoExprColumn) -> Series:
         """
-        Extract the first match of json string with provided JSONPath expression.
+        Extract the first match of JSON string with provided JSONPath expression.
 
-        Throw errors if encounter invalid json strings.
-        All return value will be casted to String regardless of the original value.
+        Throw errors if encounter invalid JSON strings.
+        All return values will be cast to String regardless of the original value.
 
         Documentation on JSONPath standard can be found
         `here <https://goessner.net/articles/JsonPath/>`_.
@@ -1284,7 +1284,7 @@ class StringNameSpace:
         ]
         """
 
-    def strip_chars(self, characters: IntoExprColumn | None = None) -> Series:
+    def strip_chars(self, characters: IntoExpr = None) -> Series:
         r"""
         Remove leading and trailing characters.
 
@@ -1319,7 +1319,7 @@ class StringNameSpace:
         ]
         """
 
-    def strip_chars_start(self, characters: IntoExprColumn | None = None) -> Series:
+    def strip_chars_start(self, characters: IntoExpr = None) -> Series:
         r"""
         Remove leading characters.
 
@@ -1353,7 +1353,7 @@ class StringNameSpace:
         ]
         """
 
-    def strip_chars_end(self, characters: IntoExprColumn | None = None) -> Series:
+    def strip_chars_end(self, characters: IntoExpr = None) -> Series:
         r"""
         Remove trailing characters.
 

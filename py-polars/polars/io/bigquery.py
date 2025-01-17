@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import io
+import json
 from typing import TYPE_CHECKING, Sequence, Tuple, Iterator
 
 from polars.datatypes import (
@@ -48,6 +49,40 @@ def _bigquery_to_polars_types(table: bigquery.Table):
 
     return pl_schema
 
+
+def _json_expr_to_row_restriction(expr_json) -> str | None:
+    """Create a row restriction to filter rows.
+    
+    Returns None if unknown operators are found and can't guarantee a superset of rows.
+    """
+    # TODO: iterative compilation to support deeper trees
+    if 'BinaryExpr' in expr_json:
+        binary_expr = expr_json['BinaryExpr']
+        left = _json_expr_to_row_restriction(binary_expr['left'])
+        if left is None:
+            return None
+        right = _json_expr_to_row_restriction(binary_expr['right'])
+        if right is None:
+            return None
+        
+        # TODO: lookup table instead of iterating through all possible types
+        if binary_expr['op'] == 'And':
+            return f"({left}) AND ({right})"
+
+        if binary_expr['op']  == 'Eq':
+            return f"{left} = {right}"
+        
+        return None
+
+    if 'Column' in expr_json:
+        return f"`{expr_json['Column']}`"
+    
+    if 'Literal' in expr_json:
+        literal = expr_json['Literal']
+        _, value = literal.popitem()
+        return repr(value)
+    
+    return None
 
 
 def _source_to_table_path_and_billing_project(source: str, *, default_project_id: str | None) -> Tuple[str, str]:
@@ -106,14 +141,24 @@ def _scan_bigquery_impl(
     """
     import google.cloud.bigquery_storage_v1.types as types
 
-    if predicate is not None:
-        predicate_expr = pl.Expr.deserialize(predicate)
-        predicate_expr.meta.serialize("test-expr.json", format="json")
-
     read_request = types.CreateReadSessionRequest()
     read_session = types.ReadSession()
+    read_options = types.ReadSession.TableReadOptions()
+
+    if predicate is not None:
+        predicate_expr = pl.Expr.deserialize(predicate)
+        predicate_json_file = io.BytesIO()
+        predicate_expr.meta.serialize(predicate_json_file, format="json")
+        predicate_json_file.seek(0)
+        predicate_json = json.load(predicate_json_file)
+        read_options.row_restriction = _json_expr_to_row_restriction(predicate_json)
+        print(read_options.row_restriction)
+
+    read_options.selected_fields = with_columns
+    read_session.read_options = read_options
     read_session.table = table_path
     read_session.data_format = types.DataFormat.ARROW
+    
     read_request.parent = f"projects/{billing_project_id}"
     read_request.read_session = read_session
 

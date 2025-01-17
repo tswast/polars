@@ -6933,6 +6933,7 @@ class DataFrame:
         allow_parallel: bool = True,
         force_parallel: bool = False,
         coalesce: bool = True,
+        allow_exact_matches: bool = True,
     ) -> DataFrame:
         """
         Perform an asof join.
@@ -7018,6 +7019,13 @@ class DataFrame:
 
             Note that joining on any other expressions than `col`
             will turn off coalescing.
+        allow_exact_matches
+            Whether exact matches are valid join predicates.
+
+            - If True, allow matching with the same ``on`` value
+                (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+            - If False, don't match the same ``on`` value
+                (i.e., strictly less-than / strictly greater-than).
 
         Examples
         --------
@@ -7250,6 +7258,7 @@ class DataFrame:
                 allow_parallel=allow_parallel,
                 force_parallel=force_parallel,
                 coalesce=coalesce,
+                allow_exact_matches=allow_exact_matches,
             )
             .collect(_eager=True)
         )
@@ -7276,7 +7285,8 @@ class DataFrame:
         other
             DataFrame to join with.
         on
-            Name(s) of the join columns in both DataFrames.
+            Name(s) of the join columns in both DataFrames. If set, `left_on` and
+            `right_on` should be None. This should not be specified if `how="cross"`.
         how : {'inner', 'left', 'right', 'full', 'semi', 'anti', 'cross'}
             Join strategy.
 
@@ -7437,6 +7447,24 @@ class DataFrame:
         ╞═════╪═════╪═════╡
         │ 3   ┆ 8.0 ┆ c   │
         └─────┴─────┴─────┘
+
+        >>> df.join(other_df, how="cross")
+        shape: (9, 5)
+        ┌─────┬─────┬─────┬───────┬───────────┐
+        │ foo ┆ bar ┆ ham ┆ apple ┆ ham_right │
+        │ --- ┆ --- ┆ --- ┆ ---   ┆ ---       │
+        │ i64 ┆ f64 ┆ str ┆ str   ┆ str       │
+        ╞═════╪═════╪═════╪═══════╪═══════════╡
+        │ 1   ┆ 6.0 ┆ a   ┆ x     ┆ a         │
+        │ 1   ┆ 6.0 ┆ a   ┆ y     ┆ b         │
+        │ 1   ┆ 6.0 ┆ a   ┆ z     ┆ d         │
+        │ 2   ┆ 7.0 ┆ b   ┆ x     ┆ a         │
+        │ 2   ┆ 7.0 ┆ b   ┆ y     ┆ b         │
+        │ 2   ┆ 7.0 ┆ b   ┆ z     ┆ d         │
+        │ 3   ┆ 8.0 ┆ c   ┆ x     ┆ a         │
+        │ 3   ┆ 8.0 ┆ c   ┆ y     ┆ b         │
+        │ 3   ┆ 8.0 ┆ c   ┆ z     ┆ d         │
+        └─────┴─────┴─────┴───────┴───────────┘
 
         Notes
         -----

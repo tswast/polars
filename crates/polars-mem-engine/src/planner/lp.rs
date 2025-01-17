@@ -25,7 +25,12 @@ fn partitionable_gb(
         // complex expressions in the group_by itself are also not partitionable
         // in this case anything more than col("foo")
         for key in keys {
-            if (expr_arena).iter(key.node()).count() > 1 {
+            if (expr_arena).iter(key.node()).count() > 1
+                || has_aexpr(key.node(), expr_arena, |ae| match ae {
+                    AExpr::Literal(lv) => !lv.is_scalar(),
+                    _ => false,
+                })
+            {
                 return false;
             }
         }

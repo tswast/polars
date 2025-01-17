@@ -2,22 +2,37 @@ from __future__ import annotations
 
 import functools
 import io
-from typing import TYPE_CHECKING, Tuple, Iterator
+from typing import TYPE_CHECKING, Sequence, Tuple, Iterator
 
 from polars.datatypes import (
     Int64,
     String,
 )
-from polars.dependencies import bigquery_storage_v1
+from polars.dependencies import bigquery, bigquery_storage_v1
 import polars._reexport as pl
 import polars.io.ipc
+import polars.expr.meta
 
 
 if TYPE_CHECKING:
     from polars import LazyFrame
 
+def _bigquery_to_polars_type(field: bigquery.SchemaField):
+    if field.mode.casefold() == "repeated":
+        raise TypeError("array types not yet supported")
 
-def _bigquery_to_polars_types():
+    type_ = field.field_type.casefold()
+    if type_ in ("record", "struct"):
+        raise TypeError("nested types not yet supported")
+
+    if type_ == "string":
+        return String()
+    if type_ in ("integer", "int64"):
+        return Int64()
+    raise TypeError(f"got unexpected BigQuery type: {type_}")
+
+
+def _bigquery_to_polars_types(table: bigquery.Table):
     """Convert BigQuery types to Polars types.
     
     Note: the REST API uses the names from the Legacy SQL data types (https://cloud.google.com/bigquery/docs/data-types).
@@ -25,14 +40,13 @@ def _bigquery_to_polars_types():
     Also, the first request to the BigQuery Storage Read API provides an Arrow schema, but we want to delay starting a read session until after we know which columns and row filters we're using.
     """
 
-    # TODO: don't hardcode the bigquery-public-data.usa_names.usa_1910_2013 table
-    return {
-        "state": String(),
-        "gender": String(),
-        "year": Int64(),
-        "name": String(),
-        "number": Int64(),
-    }
+    # TODO: if table is time partitioned, add pseudocolumn for _PARTITIONTIME to allow for partition filters. https://cloud.google.com/bigquery/docs/partitioned-tables#ingestion_time
+
+    pl_schema = {}
+    for field in table.schema:
+        pl_schema[field.name] = _bigquery_to_polars_type(field)
+
+    return pl_schema
 
 
 
@@ -60,14 +74,19 @@ def _source_to_table_path_and_billing_project(source: str, *, default_project_id
     )
 
 
-def scan_bigquery(source: str, *, bqstorage_client = None, billing_project_id: str | None = None) -> LazyFrame:
+def scan_bigquery(source: str, *, bq_client = None, bqstorage_client = None, billing_project_id: str | None = None) -> LazyFrame:
+    # TODO: customize auth and client_info
+    if bq_client is None:
+        bq_client = bigquery.Client(project=billing_project_id)
+
     if bqstorage_client is None:
         bqstorage_client = bigquery_storage_v1.BigQueryReadClient()
 
-    table_path, billing_project_id = _source_to_table_path_and_billing_project(source, default_project_id=billing_project_id)
+    table = bq_client.get_table(source)
+    pl_schema = _bigquery_to_polars_types(table)
 
+    table_path, billing_project_id = _source_to_table_path_and_billing_project(source, default_project_id=billing_project_id)
     func = functools.partial(_scan_bigquery_impl, bqstorage_client, table_path, billing_project_id)
-    pl_schema = _bigquery_to_polars_types()
     return pl.LazyFrame._scan_python_function(pl_schema, func, pyarrow=False)
 
 
@@ -86,6 +105,10 @@ def _scan_bigquery_impl(
     This function will be registered as IO source.
     """
     import google.cloud.bigquery_storage_v1.types as types
+
+    if predicate is not None:
+        predicate_expr = pl.Expr.deserialize(predicate)
+        predicate_expr.meta.serialize("test-expr.json", format="json")
 
     read_request = types.CreateReadSessionRequest()
     read_session = types.ReadSession()

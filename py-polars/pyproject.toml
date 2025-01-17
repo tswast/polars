@@ -61,6 +61,7 @@ database = ["polars[adbc,connectorx,sqlalchemy]", "nest-asyncio"]
 
 # Cloud
 fsspec = ["fsspec"]
+bigquery = ["google-cloud-bigquery"]
 bigquery = ["google-cloud-bigquery-storage"]
 
 # Other I/O

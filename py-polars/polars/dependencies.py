@@ -172,6 +172,7 @@ else:
 
     # heavy/optional third party libs
     altair, _ALTAIR_AVAILABLE = _lazy_import("altair")
+    bigquery, _BIGQUERY_AVAILABLE = _lazy_import("google.cloud.bigquery")
     bigquery_storage_v1, _BIGQUERY_STORAGE_V1_AVAILABLE = _lazy_import("google.cloud.bigquery_storage_v1")
     deltalake, _DELTALAKE_AVAILABLE = _lazy_import("deltalake")
     fsspec, _FSSPEC_AVAILABLE = _lazy_import("fsspec")
@@ -294,6 +295,7 @@ __all__ = [
     "subprocess",
     # lazy-load third party libs
     "altair",
+    "bigquery",
     "bigquery_storage_v1",
     "deltalake",
     "fsspec",

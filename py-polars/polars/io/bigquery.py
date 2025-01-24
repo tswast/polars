@@ -101,37 +101,7 @@ def _scan_bigquery_impl(
     ``n_rows`` and ``batch_size`` are not supported by the BigQuery Storage
     Read API. These parameters are ignored.
     """
-    import google.cloud.bigquery_storage_v1.types as types
-
-    read_request = types.CreateReadSessionRequest()
-    read_session = types.ReadSession()
-    read_options = types.ReadSession.TableReadOptions()
-
-    if predicate is not None:
-        predicate_expr = pl.Expr.deserialize(predicate)
-        predicate_json_file = io.BytesIO()
-        predicate_expr.meta.serialize(predicate_json_file, format="json")
-        predicate_expr.meta.serialize("test-expr.json", format="json")  # TODO: delete me
-        predicate_json_file.seek(0)
-        predicate_json = json.load(predicate_json_file)
-        read_options.row_restriction = _json_expr_to_row_restriction(predicate_json)
-
-    if with_columns is not None:
-        read_options.selected_fields = with_columns
-    else:
-        read_options.selected_fields = original_columns
-
-    read_session.read_options = read_options
-    read_session.table = table_path
-    read_session.data_format = types.DataFormat.ARROW
-    
-    read_request.parent = f"projects/{billing_project_id}"
-    read_request.read_session = read_session
-
-    # single-threaded for simplicity, consider increasing this to the number of
-    # parallel workers.
-    read_request.max_stream_count = 1  
-
+    read_request = _to_read_request(original_columns, table_path, billing_project_id, with_columns, predicate)
     session = bqstorage_client.create_read_session(read_request)
     stream = io.BytesIO()
     arrow_schema = session.arrow_schema.serialized_schema
@@ -257,7 +227,7 @@ def _bigquery_to_polars_types(table: bigquery.Table):
         pl_schema["_PARTITIONDATE"] = Date()
 
     return pl_schema
-
+        
 
 def _json_literal_to_sql(literal_json) -> str | None:
     """Convert a literal from a polars expression JSON into SQL-like."""
@@ -281,6 +251,28 @@ def _json_literal_to_sql(literal_json) -> str | None:
     # integers and strings. It may not be true for other types.
     return repr(value)
 
+
+def _json_function_to_sql(function_json) -> str | None:
+    """Converts a polars function call into the equivalent BigQuery syntax."""
+
+    # So far, only boolean output functions are supported.
+    boolean_function_name = function_json.get("function", {}).get("Boolean", None)
+    if boolean_function_name is None:
+        return None
+
+    if boolean_function_name == "IsNull":
+        input_ = _json_expr_to_row_restriction(function_json["input"][0])
+        if input_ is None:
+            return None
+        return f"({input_} IS NULL)"
+    
+    if boolean_function_name == "IsNotNull":
+        input_ = _json_expr_to_row_restriction(function_json["input"][0])
+        if input_ is None:
+            return None
+        return f"({input_} IS NOT NULL)"
+    
+    return None
 
 
 def _json_expr_to_row_restriction(expr_json) -> str | None:
@@ -321,6 +313,10 @@ def _json_expr_to_row_restriction(expr_json) -> str | None:
         if sql_op is None:
             return None
         return f"({left} {sql_op} {right})"
+    
+    if 'Function' in expr_json:
+        function_json = expr_json['Function']
+        return _json_function_to_sql(function_json)
 
     if 'Column' in expr_json:
         return f"`{expr_json['Column']}`"  # TODO: do we need to escape any characters?
@@ -355,3 +351,48 @@ def _source_to_table_path_and_billing_project(source: str, *, default_project_id
         "(project optional if billing_project_id is set), but got "
         f"{len(parts)} parts in source: {repr(source)}."
     )
+
+
+def _predicate_to_row_restriction(predicate: pl.Expr) -> str | None:
+    predicate_json_file = io.BytesIO()
+    predicate.meta.serialize(predicate_json_file, format="json")
+    predicate.meta.serialize("test-expr.json", format="json")
+    predicate_json_file.seek(0)
+    predicate_json = json.load(predicate_json_file)
+    return _json_expr_to_row_restriction(predicate_json)
+
+
+def _to_read_request(
+    original_columns: list[str],
+    table_path: str,
+    billing_project_id: str,
+    with_columns: list[str] | None,
+    predicate: pl.Expr | None,
+):
+    """Create gRPC request to read a BigQuery table."""
+    import google.cloud.bigquery_storage_v1.types as types
+
+    read_request = types.CreateReadSessionRequest()
+    read_session = types.ReadSession()
+    read_options = types.ReadSession.TableReadOptions()
+
+    if predicate is not None:
+        predicate_expr = pl.Expr.deserialize(predicate)
+        read_options.row_restriction = _predicate_to_row_restriction(predicate_expr)
+
+    if with_columns is not None:
+        read_options.selected_fields = with_columns
+    else:
+        read_options.selected_fields = original_columns
+
+    read_session.read_options = read_options
+    read_session.table = table_path
+    read_session.data_format = types.DataFormat.ARROW
+    
+    read_request.parent = f"projects/{billing_project_id}"
+    read_request.read_session = read_session
+
+    # single-threaded for simplicity, consider increasing this to the number of
+    # parallel workers.
+    read_request.max_stream_count = 1
+    return read_request

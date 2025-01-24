@@ -1,7 +1,7 @@
 use std::mem::ManuallyDrop;
 
+use arrow::bitmap::MutableBitmap;
 use either::Either;
-use polars::export::arrow::bitmap::MutableBitmap;
 use polars::prelude::*;
 #[cfg(feature = "pivot")]
 use polars_lazy::frame::pivot::{pivot, pivot_stable};
@@ -649,13 +649,6 @@ impl PyDataFrame {
                 ca.into_series().into()
             }
         })
-    }
-
-    pub fn unnest(&self, py: Python, columns: Vec<String>) -> PyResult<Self> {
-        let df = py
-            .allow_threads(|| self.df.unnest(columns))
-            .map_err(PyPolarsErr::from)?;
-        Ok(df.into())
     }
 
     pub fn clear(&self, py: Python) -> Self {

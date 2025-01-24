@@ -1,16 +1,15 @@
 use std::borrow::{Borrow, Cow};
 
+use chrono::{
+    DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Timelike,
+};
 use chrono_tz::Tz;
 #[cfg(feature = "object")]
 use polars::chunked_array::object::PolarsObjectSafe;
 #[cfg(feature = "object")]
 use polars::datatypes::OwnedObject;
 use polars::datatypes::{DataType, Field, PlHashMap, TimeUnit};
-use polars::export::chrono::{DateTime, FixedOffset};
 use polars::prelude::{AnyValue, PlSmallStr, Series};
-use polars_core::export::chrono::{
-    Datelike, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Timelike,
-};
 use polars_core::utils::any_values_to_supertype_and_n_dtypes;
 use polars_core::utils::arrow::temporal_conversions::date32_to_date;
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
@@ -472,15 +471,15 @@ pub(crate) fn py_object_to_any_value<'py>(
             Ok(get_struct)
         } else {
             let ob_type = ob.get_type();
-            let type_name = ob_type.qualname()?.to_string();
+            let type_name = ob_type.fully_qualified_name()?.to_string();
             match type_name.as_str() {
                 // Can't use pyo3::types::PyDateTime with abi3-py37 feature,
                 // so need this workaround instead of `isinstance(ob, datetime)`.
-                "date" => Ok(get_date as InitFn),
-                "time" => Ok(get_time as InitFn),
-                "datetime" => Ok(get_datetime as InitFn),
-                "timedelta" => Ok(get_timedelta as InitFn),
-                "Decimal" => Ok(get_decimal as InitFn),
+                "datetime.date" => Ok(get_date as InitFn),
+                "datetime.time" => Ok(get_time as InitFn),
+                "datetime.datetime" => Ok(get_datetime as InitFn),
+                "datetime.timedelta" => Ok(get_timedelta as InitFn),
+                "decimal.Decimal" => Ok(get_decimal as InitFn),
                 "range" => Ok(get_list as InitFn),
                 _ => {
                     // Support NumPy scalars.

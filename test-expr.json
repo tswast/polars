@@ -1,0 +1,1 @@
+{"BinaryExpr":{"left":{"Column":"_PARTITIONDATE"},"op":"Gt","right":{"Literal":{"Date":20089}}}}

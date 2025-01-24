@@ -3,11 +3,17 @@ from __future__ import annotations
 import functools
 import io
 import json
-from typing import TYPE_CHECKING, Sequence, Tuple, Iterator
+from typing import TYPE_CHECKING, Tuple, Iterator
 
 from polars.datatypes import (
+    Date,
+    Datetime,
+    Decimal,
     Int64,
+    List,
+    Field,
     String,
+    Struct,
 )
 from polars.dependencies import bigquery, bigquery_storage_v1
 import polars._reexport as pl
@@ -20,12 +26,27 @@ if TYPE_CHECKING:
 
 def _bigquery_to_polars_type(field: bigquery.SchemaField):
     if field.mode.casefold() == "repeated":
-        raise TypeError("array types not yet supported")
+        inner_type = _bigquery_to_polars_type(
+            bigquery.SchemaField(
+                field.name,
+                field.field_type,
+                fields=field.fields,
+                mode="NULLABLE",
+            ),
+        )
+        return List(inner_type)
 
     type_ = field.field_type.casefold()
     if type_ in ("record", "struct"):
-        raise TypeError("nested types not yet supported")
+        polars_fields = []
+        for field in field.fields:
+            polars_fields.append(Field(field.name, _bigquery_to_polars_type(field)))
+        return Struct(polars_fields)
 
+    if type_ in ("numeric", "decimal"):
+        # BigQuery NUMERIC type has precision 38 and scale 9.
+        # https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types#decimal_types
+        return Decimal(precision=38, scale=9)
     if type_ == "string":
         return String()
     if type_ in ("integer", "int64"):
@@ -41,13 +62,38 @@ def _bigquery_to_polars_types(table: bigquery.Table):
     Also, the first request to the BigQuery Storage Read API provides an Arrow schema, but we want to delay starting a read session until after we know which columns and row filters we're using.
     """
 
-    # TODO: if table is time partitioned, add pseudocolumn for _PARTITIONTIME to allow for partition filters. https://cloud.google.com/bigquery/docs/partitioned-tables#ingestion_time
-
     pl_schema = {}
     for field in table.schema:
         pl_schema[field.name] = _bigquery_to_polars_type(field)
 
+    # If table is ingestion time partitioned, add pseudocolumn for _PARTITIONTIME to allow for partition filters. https://cloud.google.com/bigquery/docs/partitioned-tables#ingestion_time
+    if (time_partitioning := table.time_partitioning) is not None and time_partitioning.field is None:
+        pl_schema["_PARTITIONTIME"] = Datetime(time_unit="us", time_zone="utc")
+        pl_schema["_PARTITIONDATE"] = Date()
+
     return pl_schema
+
+
+_BINARY_OPS = {
+    'Or': 'OR',
+    'And': 'AND',
+    'Eq': '=',
+    'Gt': '>',
+    'GtEq': '>=',
+    'Lt': '<',
+    'LtEq': '<=',
+}
+
+
+def _json_literal_to_sql(literal_json) -> str | None:
+    polars_type, value = literal_json.popitem()
+
+    if polars_type == "DateTime":
+        # TODO: check units, timezone
+        return f"TIMESTAMP_MICROS({value[0]})"
+
+    return repr(value)
+
 
 
 def _json_expr_to_row_restriction(expr_json) -> str | None:
@@ -55,33 +101,48 @@ def _json_expr_to_row_restriction(expr_json) -> str | None:
     
     Returns None if unknown operators are found and can't guarantee a superset of rows.
     """
-    # TODO: iterative compilation to support deeper trees
+    # TODO: Use iterative compilation to support deeper trees. Python 3.12+
+    # has a pretty strict 1000 depth limit. See:
+    # https://github.com/python/cpython/issues/112282
     if 'BinaryExpr' in expr_json:
         binary_expr = expr_json['BinaryExpr']
         left = _json_expr_to_row_restriction(binary_expr['left'])
-        if left is None:
-            return None
         right = _json_expr_to_row_restriction(binary_expr['right'])
-        if right is None:
+
+        polars_op = binary_expr.get('op', None)
+        if polars_op is None:
             return None
         
         # TODO: lookup table instead of iterating through all possible types
-        if binary_expr['op'] == 'And':
-            return f"({left}) AND ({right})"
+        if polars_op == 'And':
+            # With 'And', filtering by just one of the two children will still
+            # give a superset of the filtered rows. The rest of the filters can
+            # be applied by polars instead of BigQuery.
+            if left is None:
+                return right
+            if right is None:
+                return left
+            
+            return f"({left} AND {right})"
 
-        if binary_expr['op']  == 'Eq':
-            return f"{left} = {right}"
+        # The rest of these operators need both left and right to be converted
+        # correctly for correctness.
+        if left is None or right is None:
+            return None
         
-        return None
+        sql_op = _BINARY_OPS.get(polars_op, None)
+        if sql_op is None:
+            return None
+        return f"({left} {sql_op} {right})"
 
     if 'Column' in expr_json:
-        return f"`{expr_json['Column']}`"
+        return f"`{expr_json['Column']}`"  # TODO: do we need to escape any characters?
     
     if 'Literal' in expr_json:
         literal = expr_json['Literal']
-        _, value = literal.popitem()
-        return repr(value)
+        return _json_literal_to_sql(literal)
     
+    # Got some op that we don't know how to handle.        
     return None
 
 
@@ -109,13 +170,10 @@ def _source_to_table_path_and_billing_project(source: str, *, default_project_id
     )
 
 
-def scan_bigquery(source: str, *, bq_client = None, bqstorage_client = None, billing_project_id: str | None = None) -> LazyFrame:
+def scan_bigquery(source: str, *, credentials = None, billing_project_id: str | None = None) -> LazyFrame:
     # TODO: customize auth and client_info
-    if bq_client is None:
-        bq_client = bigquery.Client(project=billing_project_id)
-
-    if bqstorage_client is None:
-        bqstorage_client = bigquery_storage_v1.BigQueryReadClient()
+    bq_client = bigquery.Client(project=billing_project_id, credentials=credentials)
+    bqstorage_client = bigquery_storage_v1.BigQueryReadClient(credentials=credentials)
 
     table = bq_client.get_table(source)
     pl_schema = _bigquery_to_polars_types(table)
@@ -138,6 +196,9 @@ def _scan_bigquery_impl(
     """
     Generator function that creates the source.
     This function will be registered as IO source.
+
+    ``n_rows`` and ``batch_size`` are not supported by the BigQuery Storage
+    Read API. These parameters are ignored.
     """
     import google.cloud.bigquery_storage_v1.types as types
 
@@ -145,15 +206,19 @@ def _scan_bigquery_impl(
     read_session = types.ReadSession()
     read_options = types.ReadSession.TableReadOptions()
 
+    print(f"predictate: {predicate is not None}")  # TODO: delete me
     if predicate is not None:
         predicate_expr = pl.Expr.deserialize(predicate)
         predicate_json_file = io.BytesIO()
         predicate_expr.meta.serialize(predicate_json_file, format="json")
+        predicate_expr.meta.serialize("test-expr.json", format="json")  # TODO: delete me
         predicate_json_file.seek(0)
         predicate_json = json.load(predicate_json_file)
         read_options.row_restriction = _json_expr_to_row_restriction(predicate_json)
-        print(read_options.row_restriction)
+        print(read_options.row_restriction)  # TODO: delete me
 
+    # TODO: if no columns selected and time partitioned, need to explicitly request the _PARTITIONTIME pseudo-column.
+    print(with_columns)  # TODO: delete me
     read_options.selected_fields = with_columns
     read_session.read_options = read_options
     read_session.table = table_path
@@ -162,10 +227,10 @@ def _scan_bigquery_impl(
     read_request.parent = f"projects/{billing_project_id}"
     read_request.read_session = read_session
 
-    # single-threaded for simplicity, consider increasing this to the number of parallel workers.
+    # single-threaded for simplicity, consider increasing this to the number of
+    # parallel workers.
     read_request.max_stream_count = 1  
 
-    # TODO: convert with_columns, predicate, n_rows, batch_size to request options
     session = bqstorage_client.create_read_session(read_request)
     arrow_schema = session.arrow_schema.serialized_schema
 

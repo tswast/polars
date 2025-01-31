@@ -1,13 +1,6 @@
 # mypy: disable-error-code="attr-defined"
 from __future__ import annotations
 
-import contextlib
-import os
-from datetime import datetime
-from pathlib import Path
-
-import pytest
-
 import polars as pl
 from polars.io.bigquery import _predicate_to_row_restriction
 
@@ -22,6 +15,10 @@ class TestBigQueryExpressions:
     def test_is_not_null_expression(self) -> None:
         expr = pl.col("id").is_not_null()
         assert _predicate_to_row_restriction(expr) == "(`id` IS NOT NULL)"
+
+    def test_isin_expression(self) -> None:
+        expr = pl.col("id").is_in([1, 2, 3])
+        assert _predicate_to_row_restriction(expr) == "(`id` IN UNNEST([1, 2, 3]))"
 
     def test_parse_combined_expression(self) -> None:
         from pyiceberg.expressions import (

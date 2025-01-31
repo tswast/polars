@@ -3,27 +3,29 @@ from __future__ import annotations
 import functools
 import io
 import json
-from typing import TYPE_CHECKING, Tuple, Iterator
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Tuple
 
+import polars._reexport as pl
+import polars.expr.meta
+import polars.functions
+import polars.io.ipc
+from polars._utils import polars_version
 from polars.datatypes import (
-    Boolean,
     Binary,
+    Boolean,
     Date,
     Datetime,
     Decimal,
+    Field,
     Float64,
     Int64,
     List,
-    Field,
     String,
     Struct,
     Time,
 )
 from polars.dependencies import bigquery, bigquery_storage_v1
-import polars._reexport as pl
-import polars.io.ipc
-import polars.expr.meta
-from polars._utils import polars_version
 
 if TYPE_CHECKING:
     from polars import LazyFrame
@@ -157,7 +159,12 @@ def _create_client_info_gapic():
 
 
 def _bigquery_to_polars_type(field: bigquery.SchemaField):
-    """Convert a BigQuery type into a polars type."""
+    """Convert a BigQuery type into a polars type.
+    
+    Note: the REST API uses the names from the Legacy SQL data types, but if
+    user-entered it may include the newer aliases.
+    (https://cloud.google.com/bigquery/docs/data-types).
+    """
     # Check for BQ ARRAY (polars List) type first because it's not returned as
     # a separate type in the BQ REST API. Instead, it uses the 'mode' field to
     # indicate an ARRAY type.
@@ -210,24 +217,20 @@ def _bigquery_to_polars_type(field: bigquery.SchemaField):
 
 
 def _bigquery_to_polars_types(table: bigquery.Table):
-    """Convert a BigQuery table into a Polars schema.
-    
-    Note: the REST API uses the names from the Legacy SQL data types, but if
-    user-entered it may include the newer aliases.
-    (https://cloud.google.com/bigquery/docs/data-types).
-    """
-
+    """Convert a BigQuery table into a Polars schema."""
     pl_schema = {}
     for field in table.schema:
         pl_schema[field.name] = _bigquery_to_polars_type(field)
 
-    # If table is ingestion time partitioned, add pseudocolumn for _PARTITIONTIME to allow for partition filters. https://cloud.google.com/bigquery/docs/partitioned-tables#ingestion_time
+    # If table is ingestion time partitioned, add pseudocolumn for _PARTITIONDATE
+    # to allow for partition filters. See:
+    # https://cloud.google.com/bigquery/docs/partitioned-tables#ingestion_time
     if (time_partitioning := table.time_partitioning) is not None and time_partitioning.field is None:
-        pl_schema["_PARTITIONTIME"] = Datetime(time_unit="us", time_zone="utc")
+        # TODO: also include _PARTITIONTIME when a Datetime(time_unit="us", time_zone="utc") predicate can be pushed down.
         pl_schema["_PARTITIONDATE"] = Date()
 
     return pl_schema
-        
+
 
 def _json_literal_to_sql(literal_json) -> str | None:
     """Convert a literal from a polars expression JSON into SQL-like."""
@@ -245,6 +248,15 @@ def _json_literal_to_sql(literal_json) -> str | None:
         return None
     if polars_type == "Date":
         return f"DATE(TIMESTAMP_SECONDS({value} * 86400))"
+    
+    if polars_type == "Series":
+        literal = pl.Expr.deserialize(json.dumps({'Literal': {'Series': value}}).encode("utf-8"), format="json")
+        series = polars.functions.select(literal).get_columns()[0]
+        if series.dtype in (Int64(), String()):
+            return f"UNNEST({repr(series.to_list())})"
+        else:
+            # Not a supported Series type.
+            return None
 
     # The assumption here is that most types have the same representation in
     # BigQuery as they do the serialized expression JSON. This is true for
@@ -254,7 +266,6 @@ def _json_literal_to_sql(literal_json) -> str | None:
 
 def _json_function_to_sql(function_json) -> str | None:
     """Converts a polars function call into the equivalent BigQuery syntax."""
-
     # So far, only boolean output functions are supported.
     boolean_function_name = function_json.get("function", {}).get("Boolean", None)
     if boolean_function_name is None:
@@ -265,13 +276,20 @@ def _json_function_to_sql(function_json) -> str | None:
         if input_ is None:
             return None
         return f"({input_} IS NULL)"
-    
+
     if boolean_function_name == "IsNotNull":
         input_ = _json_expr_to_row_restriction(function_json["input"][0])
         if input_ is None:
             return None
         return f"({input_} IS NOT NULL)"
     
+    if boolean_function_name == "IsIn":
+        column = _json_expr_to_row_restriction(function_json["input"][0])
+        values = _json_expr_to_row_restriction(function_json["input"][1])
+        if column is None or values is None:
+            return None
+        return f"({column} IN {values})"
+
     return None
 
 
@@ -291,7 +309,7 @@ def _json_expr_to_row_restriction(expr_json) -> str | None:
         polars_op = binary_expr.get('op', None)
         if polars_op is None:
             return None
-        
+
         # TODO: lookup table instead of iterating through all possible types
         if polars_op == 'And':
             # With 'And', filtering by just one of the two children will still
@@ -301,31 +319,31 @@ def _json_expr_to_row_restriction(expr_json) -> str | None:
                 return right
             if right is None:
                 return left
-            
+
             return f"({left} AND {right})"
 
         # The rest of these operators need both left and right to be converted
         # correctly for correctness.
         if left is None or right is None:
             return None
-        
-        sql_op = _BINARY_OPS.get(polars_op, None)
+
+        sql_op = _BINARY_OPS.get(polars_op)
         if sql_op is None:
             return None
         return f"({left} {sql_op} {right})"
-    
+
     if 'Function' in expr_json:
         function_json = expr_json['Function']
         return _json_function_to_sql(function_json)
 
     if 'Column' in expr_json:
         return f"`{expr_json['Column']}`"  # TODO: do we need to escape any characters?
-    
+
     if 'Literal' in expr_json:
         literal = expr_json['Literal']
         return _json_literal_to_sql(literal)
-    
-    # Got some op that we don't know how to handle.        
+
+    # Got some op that we don't know how to handle.
     return None
 
 
@@ -337,26 +355,26 @@ def _source_to_table_path_and_billing_project(source: str, *, default_project_id
             billing_project_id = default_project_id
         else:
             billing_project_id = parts[0]
-        
+
         return f"projects/{parts[0]}/datasets/{parts[1]}/tables/{parts[2]}", billing_project_id
     elif len(parts) == 2:
         if default_project_id is None:
-            raise ValueError(f"source {repr(source)} is missing project and no billing_project_id was set.")
-        
+            raise ValueError(f"source {source!r} is missing project and no billing_project_id was set.")
+
         billing_project_id = default_project_id
         return f"projects/{default_project_id}/datasets/{parts[0]}/tables/{parts[1]}", billing_project_id
-    
+
     raise ValueError(
         "expected 2 or 3 parts in the form of project.dataset.table "
         "(project optional if billing_project_id is set), but got "
-        f"{len(parts)} parts in source: {repr(source)}."
+        f"{len(parts)} parts in source: {source!r}."
     )
 
 
 def _predicate_to_row_restriction(predicate: pl.Expr) -> str | None:
     predicate_json_file = io.BytesIO()
     predicate.meta.serialize(predicate_json_file, format="json")
-    predicate.meta.serialize("test-expr.json", format="json")
+    predicate.meta.serialize("test-expr.json", format="json")  # TODO: delete me
     predicate_json_file.seek(0)
     predicate_json = json.load(predicate_json_file)
     return _json_expr_to_row_restriction(predicate_json)
@@ -388,7 +406,7 @@ def _to_read_request(
     read_session.read_options = read_options
     read_session.table = table_path
     read_session.data_format = types.DataFormat.ARROW
-    
+
     read_request.parent = f"projects/{billing_project_id}"
     read_request.read_session = read_session
 

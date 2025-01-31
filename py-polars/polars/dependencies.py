@@ -151,7 +151,6 @@ if TYPE_CHECKING:
     import subprocess
 
     import altair
-    from google.cloud import bigquery_storage_v1
     import deltalake
     import fsspec
     import gevent
@@ -162,6 +161,7 @@ if TYPE_CHECKING:
     import pyarrow
     import pydantic
     import pyiceberg
+    from google.cloud import bigquery_storage_v1
 else:
     # infrequently-used builtins
     dataclasses, _ = _lazy_import("dataclasses")

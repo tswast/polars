@@ -253,7 +253,7 @@ def _json_literal_to_sql(literal_json) -> str | None:
         literal = pl.Expr.deserialize(json.dumps({'Literal': {'Series': value}}).encode("utf-8"), format="json")
         series = polars.functions.select(literal).get_columns()[0]
         if series.dtype in (Int64(), String()):
-            return f"UNNEST({repr(series.to_list())})"
+            return f"{repr(series.to_list())}"
         else:
             # Not a supported Series type.
             return None
@@ -288,7 +288,7 @@ def _json_function_to_sql(function_json) -> str | None:
         values = _json_expr_to_row_restriction(function_json["input"][1])
         if column is None or values is None:
             return None
-        return f"({column} IN {values})"
+        return f"({column} IN UNNEST({values}))"
 
     return None
 

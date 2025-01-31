@@ -374,7 +374,6 @@ def _source_to_table_path_and_billing_project(source: str, *, default_project_id
 def _predicate_to_row_restriction(predicate: pl.Expr) -> str | None:
     predicate_json_file = io.BytesIO()
     predicate.meta.serialize(predicate_json_file, format="json")
-    predicate.meta.serialize("test-expr.json", format="json")  # TODO: delete me
     predicate_json_file.seek(0)
     predicate_json = json.load(predicate_json_file)
     return _json_expr_to_row_restriction(predicate_json)
